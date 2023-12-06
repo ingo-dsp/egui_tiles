@@ -304,7 +304,7 @@ impl Tabs {
                                 selected,
                                 is_being_dragged,
                             );
-                            let response = response.on_hover_cursor(egui::CursorIcon::Grab);
+                            // let response = response.on_hover_cursor(egui::CursorIcon::Grab);
                             if response.clicked() {
                                 behavior.on_edit(EditAction::TabSelected);
                                 next_active = Some(child_id);
