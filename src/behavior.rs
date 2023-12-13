@@ -2,6 +2,7 @@ use egui::{
     vec2, Color32, Id, Rect, Response, Rgba, Sense, Stroke, TextStyle, Ui, Vec2, Visuals,
     WidgetText,
 };
+use crate::{Linear};
 
 use super::{ResizeState, SimplificationOptions, Tile, TileId, Tiles, UiResponse};
 
@@ -66,15 +67,23 @@ pub trait Behavior<Pane> {
         active: bool,
         is_being_dragged: bool,
     ) -> Response {
+
+        let tab_bar_pos = self.tab_bar_position();
+        let orientation = tab_bar_pos.orientation();
+
         let text = self.tab_title_for_tile(tiles, tile_id);
         let font_id = TextStyle::Button.resolve(ui.style());
         let galley = text.into_galley(ui, Some(false), f32::INFINITY, font_id);
 
         let x_margin = self.tab_title_spacing(ui.visuals());
-        let (_, rect) = ui.allocate_space(vec2(
-            galley.size().x + 2.0 * x_margin,
-            ui.available_height(),
-        ));
+
+
+        let desired_size = match orientation {
+            TabBarOrientation::Horizontal => vec2(galley.size().x + 2.0 * x_margin, ui.available_height()),
+            TabBarOrientation::Vertical => vec2(galley.size().x + 2.0 * x_margin, self.tab_size()),
+        };
+        let (_, rect) = ui.allocate_space(desired_size);
+
         let response = ui.interact(rect, id, Sense::click_and_drag());
 
         // Show a gap when dragged
@@ -83,14 +92,14 @@ pub trait Behavior<Pane> {
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, active);
             ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke);
 
-            if active {
-                // Make the tab name area connect with the tab ui area:
-                ui.painter().hline(
-                    rect.x_range(),
-                    rect.bottom(),
-                    Stroke::new(stroke.width + 1.0, bg_color),
-                );
-            }
+            // if active {
+            //     // Make the tab name area connect with the tab ui area:
+            //     ui.painter().hline(
+            //         rect.x_range(),
+            //         rect.bottom(),
+            //         Stroke::new(stroke.width + 1.0, bg_color),
+            //     );
+            // }
 
             let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, active);
             ui.painter().galley(
@@ -151,9 +160,19 @@ pub trait Behavior<Pane> {
         // }
     }
 
-    /// The height of the bar holding tab titles.
-    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
+    /// The height/width of the bar holding tab titles.
+    fn tab_bar_size(&self, _style: &egui::Style) -> f32 {
         24.0
+    }
+
+    /// The height of the tab for horizontal bars, and the width of the tab for vertical bars.
+    fn tab_size(&self) ->f32 {
+        0.0
+    }
+
+    /// The position of the tab bar (added by ingodsp).
+    fn tab_bar_position(&self) -> TabBarPosition {
+        TabBarPosition::Top
     }
 
     /// Width of the gap between tiles in a horizontal or vertical layout,
@@ -347,6 +366,27 @@ fn num_columns_heuristic(n: usize, size: Vec2, gap: f32, desired_aspect: f32) ->
     }
 
     best_num_columns
+}
+#[derive(Clone, Copy, Debug)]
+pub enum TabBarPosition {
+    Left, Top, Right, Bottom
+}
+impl Default for TabBarPosition {
+    fn default() -> Self {
+        TabBarPosition::Top
+    }
+}
+impl TabBarPosition {
+    pub fn orientation(&self) -> TabBarOrientation {
+        match self {
+            TabBarPosition::Top | TabBarPosition::Bottom => TabBarOrientation::Horizontal,
+            TabBarPosition::Left | TabBarPosition::Right => TabBarOrientation::Vertical,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub enum TabBarOrientation {
+    Horizontal, Vertical
 }
 
 #[test]

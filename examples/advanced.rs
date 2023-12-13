@@ -146,7 +146,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     // ---
     // Settings:
 
-    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
+    fn tab_bar_size(&self, _style: &egui::Style) -> f32 {
         self.tab_bar_height
     }
 
