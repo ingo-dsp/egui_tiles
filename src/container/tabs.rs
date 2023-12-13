@@ -1,9 +1,7 @@
 use egui::{scroll_area::ScrollBarVisibility, vec2, NumExt, Rect, Vec2};
 
-use crate::{
-    is_being_dragged, Behavior, ContainerInsertion, DropContext, InsertionPoint, SimplifyAction,
-    TileId, Tiles, Tree,
-};
+use crate::{is_being_dragged, Behavior, ContainerInsertion, DropContext, InsertionPoint, SimplifyAction, TileId, Tiles, Tree, LinearDir};
+use crate::behavior::{TabBarOrientation, TabBarPosition};
 
 /// Fixed size icons for `⏴` and `⏵`
 const SCROLL_ARROW_SIZE: Vec2 = Vec2::splat(20.0);
@@ -49,31 +47,49 @@ struct ScrollState {
 
     /// Did we show the right scroll-arrow last frame?
     pub showed_right_arrow_prev: bool,
+
+    /// Position of tab bar
+    pub tab_bar_pos: TabBarPosition
 }
 
 impl ScrollState {
     /// Returns the space left for the tabs after the scroll arrows.
-    pub fn update(&mut self, ui: &egui::Ui) -> f32 {
-        let mut scroll_area_width = ui.available_width();
+    pub fn update(&mut self, ui: &egui::Ui, tab_bar_pos: TabBarPosition) -> f32 {
+        self.tab_bar_pos = tab_bar_pos;
+        let orientation = tab_bar_pos.orientation();
 
-        let button_and_spacing_width = SCROLL_ARROW_SIZE.x + ui.spacing().item_spacing.x;
+        let mut scroll_area_size = match orientation {
+            TabBarOrientation::Horizontal => ui.available_width(),
+            TabBarOrientation::Vertical => ui.available_height(),
+        };
+        let button_and_spacing_size = match orientation {
+            TabBarOrientation::Horizontal => SCROLL_ARROW_SIZE.x + ui.spacing().item_spacing.x,
+            TabBarOrientation::Vertical => SCROLL_ARROW_SIZE.y + ui.spacing().item_spacing.y,
+        };
 
         let margin = 0.1;
 
-        self.show_left_arrow = SCROLL_ARROW_SIZE.x < self.offset;
+        self.show_left_arrow = match orientation {
+            TabBarOrientation::Horizontal => SCROLL_ARROW_SIZE.x < self.offset,
+            TabBarOrientation::Vertical => SCROLL_ARROW_SIZE.y < self.offset,
+        };
 
         if self.show_left_arrow {
-            scroll_area_width -= button_and_spacing_width;
+            scroll_area_size -= button_and_spacing_size;
         }
 
-        self.show_right_arrow = self.offset + scroll_area_width + margin < self.content_size.x;
+        let content_size = match orientation {
+            TabBarOrientation::Horizontal => self.content_size.x,
+            TabBarOrientation::Vertical => self.content_size.y,
+        };
+        self.show_right_arrow = self.offset + scroll_area_size + margin < content_size;
 
         // Compensate for showing/hiding of arrow:
-        self.offset += button_and_spacing_width
+        self.offset += button_and_spacing_size
             * ((self.show_left_arrow as i32 as f32) - (self.showed_left_arrow_prev as i32 as f32));
 
         if self.show_right_arrow {
-            scroll_area_width -= button_and_spacing_width;
+            scroll_area_size -= button_and_spacing_size;
         }
 
         self.showed_left_arrow_prev = self.show_left_arrow;
@@ -95,11 +111,15 @@ impl ScrollState {
             }
         }
 
-        scroll_area_width
+        scroll_area_size
     }
 
     fn scroll_increment(&self) -> f32 {
-        (self.available.x / 3.0).at_least(20.0)
+        match self.tab_bar_pos.orientation() {
+            TabBarOrientation::Horizontal => (self.available.x / 3.0).at_least(20.0),
+            TabBarOrientation::Vertical => (self.available.y / 3.0).at_least(20.0),
+        }
+
     }
 
     pub fn left_arrow(&mut self, ui: &mut egui::Ui) {
@@ -170,7 +190,12 @@ impl Tabs {
         }
 
         let mut active_rect = rect;
-        active_rect.min.y += behavior.tab_bar_height(style);
+
+        let tab_bar_pos = behavior.tab_bar_position();
+        match tab_bar_pos.orientation() {
+            TabBarOrientation::Horizontal => active_rect.min.y += behavior.tab_bar_size(style),
+            TabBarOrientation::Vertical => active_rect.min.x += behavior.tab_bar_size(style),
+        }
 
         if let Some(active) = self.active {
             // Only lay out the active tab (saves CPU):
@@ -210,9 +235,13 @@ impl Tabs {
         tile_id: TileId,
     ) -> Option<TileId> {
         let mut next_active = self.active;
-
-        let tab_bar_height = behavior.tab_bar_height(ui.style());
-        let tab_bar_rect = rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0;
+        let tab_bar_pos = behavior.tab_bar_position();
+        let orientation = tab_bar_pos.orientation();
+        let tab_bar_size = behavior.tab_bar_size(ui.style());
+        let tab_bar_rect = match orientation {
+            TabBarOrientation::Horizontal => rect.split_top_bottom_at_y(rect.top() + tab_bar_size).0,
+            TabBarOrientation::Vertical => rect.split_left_right_at_x(rect.left() + tab_bar_size).0,
+        };
         let mut ui = ui.child_ui(tab_bar_rect, *ui.layout());
 
         let mut button_rects = ahash::HashMap::default();
@@ -221,7 +250,11 @@ impl Tabs {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, behavior.tab_bar_color(ui.visuals()));
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let layout = match orientation {
+            TabBarOrientation::Horizontal =>egui::Layout::right_to_left(egui::Align::Center),
+                    TabBarOrientation::Vertical => egui::Layout::bottom_up(egui::Align::Center)
+        };
+        ui.with_layout(layout, |ui| {
             let scroll_state_id = ui.make_persistent_id(tile_id);
             let mut scroll_state = ui.ctx().memory_mut(|m| {
                 m.data
@@ -233,29 +266,46 @@ impl Tabs {
             // They can also read and modify the scroll state if they want.
             behavior.top_bar_right_ui(&tree.tiles, ui, tile_id, self, &mut scroll_state.offset);
 
-            let scroll_area_width = scroll_state.update(ui);
+            let scroll_area_size = scroll_state.update(ui, tab_bar_pos);
 
             // We're in a right-to-left layout, so start with the right scroll-arrow:
             scroll_state.right_arrow(ui);
 
+            let layout2 = match orientation {
+                TabBarOrientation::Horizontal => egui::Layout::left_to_right(egui::Align::Center),
+                TabBarOrientation::Vertical => egui::Layout::top_down(egui::Align::Center),
+            };
             ui.allocate_ui_with_layout(
                 ui.available_size(),
-                egui::Layout::left_to_right(egui::Align::Center),
+                layout2,
                 |ui| {
                     scroll_state.left_arrow(ui);
 
                     // Prepare to show the scroll area with the tabs:
 
-                    scroll_state.offset = scroll_state
-                        .offset
-                        .at_most(scroll_state.content_size.x - ui.available_width());
+                    match orientation {
+                        TabBarOrientation::Horizontal => {
+                            scroll_state.offset = scroll_state.offset.at_most(scroll_state.content_size.x - ui.available_width());
+                        }
+                        TabBarOrientation::Vertical => {
+                            scroll_state.offset = scroll_state.offset.at_most(scroll_state.content_size.y - ui.available_height());
+                        }
+
+                    }
                     scroll_state.offset = scroll_state.offset.at_least(0.0);
 
-                    let scroll_area = egui::ScrollArea::horizontal()
-                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-                        .max_width(scroll_area_width)
-                        .auto_shrink([false; 2])
-                        .horizontal_scroll_offset(scroll_state.offset);
+                    let scroll_area = match orientation {
+                        TabBarOrientation::Horizontal => egui::ScrollArea::horizontal()
+                            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                            .max_width(scroll_area_size)
+                            .auto_shrink([false; 2])
+                            .horizontal_scroll_offset(scroll_state.offset),
+                        TabBarOrientation::Vertical => egui::ScrollArea::vertical()
+                            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                            .max_height(scroll_area_size)
+                            .auto_shrink([false; 2])
+                            .vertical_scroll_offset(scroll_state.offset),
+                    };
 
                     let output = scroll_area.show(ui, |ui| {
                         if !tree.is_root(tile_id) {
@@ -275,6 +325,7 @@ impl Tabs {
                         }
 
                         ui.spacing_mut().item_spacing.x = 0.0; // Tabs have spacing built-in
+                        ui.spacing_mut().item_spacing.y = 0.0;
 
                         for (i, &child_id) in self.children.iter().enumerate() {
                             if !tree.is_visible(child_id) {
@@ -317,7 +368,10 @@ impl Tabs {
                         }
                     });
 
-                    scroll_state.offset = output.state.offset.x;
+                    match orientation {
+                        TabBarOrientation::Horizontal => scroll_state.offset = output.state.offset.x,
+                        TabBarOrientation::Vertical => scroll_state.offset = output.state.offset.y,
+                    }
                     scroll_state.content_size = output.content_size;
                     scroll_state.available = output.inner_rect.size();
                 },
@@ -338,10 +392,10 @@ impl Tabs {
             } else {
                 rect.size() // guess that the size is the same as the last button
             };
-            Rect::from_min_size(
-                rect.right_top() + vec2(ui.spacing().item_spacing.x, 0.0),
-                dragged_size,
-            )
+            match orientation {
+                TabBarOrientation::Horizontal =>             Rect::from_min_size(rect.right_top() + vec2(ui.spacing().item_spacing.x, 0.0), dragged_size),
+                TabBarOrientation::Vertical =>             Rect::from_min_size(rect.right_top() + vec2(0.0, ui.spacing().item_spacing.y), dragged_size),
+            }
         };
         super::linear::drop_zones(
             preview_thickness,

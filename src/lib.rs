@@ -123,6 +123,8 @@ mod tiles;
 mod tree;
 
 pub use behavior::Behavior;
+pub use behavior::TabBarPosition;
+pub use behavior::TabBarOrientation;
 pub use container::{Container, ContainerKind, Grid, GridLayout, Linear, LinearDir, Tabs};
 pub use tile::{Tile, TileId};
 pub use tiles::Tiles;
@@ -337,10 +339,13 @@ impl DropContext {
             );
         }
 
+        let preview_rect =  match behavior.tab_bar_position().orientation() {
+            TabBarOrientation::Horizontal => rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_size(style)).1,
+            TabBarOrientation::Vertical => rect.split_left_right_at_x(rect.left() + behavior.tab_bar_size(style)).1,
+        };
         self.suggest_rect(
             InsertionPoint::new(parent_id, ContainerInsertion::Tabs(usize::MAX)),
-            rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
-                .1,
+            preview_rect,
         );
     }
 
