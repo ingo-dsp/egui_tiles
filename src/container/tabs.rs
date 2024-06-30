@@ -1,5 +1,6 @@
 use egui::{scroll_area::ScrollBarVisibility, vec2, NumExt, Rect, Vec2};
 
+use crate::behavior::{EditAction, TabState};
 use crate::{
     is_being_dragged, Behavior, ContainerInsertion, DropContext, InsertionPoint, SimplifyAction,
     TileId, Tiles, Tree,
@@ -154,6 +155,23 @@ impl Tabs {
         behavior: &mut dyn Behavior<Pane>,
         rect: Rect,
     ) {
+        let prev_active = self.active;
+        self.ensure_active(tiles);
+        if prev_active != self.active {
+            behavior.on_edit(EditAction::TabSelected);
+        }
+
+        let mut active_rect = rect;
+        active_rect.min.y += behavior.tab_bar_height(style);
+
+        if let Some(active) = self.active {
+            // Only lay out the active tab (saves CPU):
+            tiles.layout_tile(style, behavior, active_rect, active);
+        }
+    }
+
+    /// Make sure we have an active tab (or no visible tabs).
+    pub fn ensure_active<Pane>(&mut self, tiles: &Tiles<Pane>) {
         if let Some(active) = self.active {
             if !tiles.is_visible(active) {
                 self.active = None;
@@ -167,14 +185,6 @@ impl Tabs {
                 .iter()
                 .copied()
                 .find(|&child_id| tiles.is_visible(child_id));
-        }
-
-        let mut active_rect = rect;
-        active_rect.min.y += behavior.tab_bar_height(style);
-
-        if let Some(active) = self.active {
-            // Only lay out the active tab (saves CPU):
-            tiles.layout_tile(style, behavior, active_rect, active);
         }
     }
 
@@ -269,8 +279,8 @@ impl Tabs {
                                 .on_hover_cursor(egui::CursorIcon::Grab)
                                 .drag_started()
                             {
-                                behavior.on_edit();
-                                ui.memory_mut(|mem| mem.set_dragged_id(tile_id.egui_id(tree.id)));
+                                behavior.on_edit(EditAction::TileDragged);
+                                ui.ctx().set_dragged_id(tile_id.egui_id(tree.id));
                             }
                         }
 
@@ -285,18 +295,17 @@ impl Tabs {
 
                             let selected = self.is_active(child_id);
                             let id = child_id.egui_id(tree.id);
-
-                            let response = behavior.tab_ui(
-                                &tree.tiles,
-                                ui,
-                                id,
-                                child_id,
-                                selected,
+                            let tab_state = TabState {
+                                active: selected,
                                 is_being_dragged,
-                            );
-                            // let response = response.on_hover_cursor(egui::CursorIcon::Grab);
+                                closable: behavior.is_tab_closable(&tree.tiles, child_id),
+                            };
+
+                            let response =
+                                behavior.tab_ui(&mut tree.tiles, ui, id, child_id, &tab_state);
+
                             if response.clicked() {
-                                behavior.on_edit();
+                                behavior.on_edit(EditAction::TabSelected);
                                 next_active = Some(child_id);
                             }
 
@@ -305,7 +314,7 @@ impl Tabs {
                                     && response.rect.contains(mouse_pos)
                                 {
                                     // Expand this tab - maybe the user wants to drop something into it!
-                                    behavior.on_edit();
+                                    behavior.on_edit(EditAction::TabSelected);
                                     next_active = Some(child_id);
                                 }
                             }
@@ -324,7 +333,7 @@ impl Tabs {
             );
 
             ui.ctx()
-                .memory_mut(|m| m.data.insert_temp(scroll_state_id, scroll_state));
+                .data_mut(|data| data.insert_temp(scroll_state_id, scroll_state));
         });
 
         // -----------

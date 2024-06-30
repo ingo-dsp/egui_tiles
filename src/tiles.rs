@@ -34,7 +34,7 @@ pub struct Tiles<Pane> {
 }
 
 impl<Pane: PartialEq> PartialEq for Tiles<Pane> {
-    fn eq(&self, other: &Tiles<Pane>) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         let Self {
             next_tile_id: _, // ignored
             tiles,
@@ -59,20 +59,6 @@ impl<Pane> Default for Tiles<Pane> {
 // ----------------------------------------------------------------------------
 
 impl<Pane> Tiles<Pane> {
-    pub(super) fn try_rect(&self, tile_id: TileId) -> Option<Rect> {
-        if self.is_visible(tile_id) {
-            self.rects.get(&tile_id).copied()
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn rect(&self, tile_id: TileId) -> Rect {
-        let rect = self.try_rect(tile_id);
-        debug_assert!(rect.is_some(), "Failed to find rect for {tile_id:?}");
-        rect.unwrap_or(egui::Rect::from_min_max(Pos2::ZERO, Pos2::ZERO))
-    }
-
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
@@ -88,8 +74,43 @@ impl<Pane> Tiles<Pane> {
         self.tiles.get(&tile_id)
     }
 
+    /// Get the pane instance for a given [`TileId`]
+    pub fn get_pane(&self, tile_id: &TileId) -> Option<&Pane> {
+        match self.tiles.get(tile_id)? {
+            Tile::Pane(pane) => Some(pane),
+            Tile::Container(_) => None,
+        }
+    }
+
+    /// Get the container instance for a given [`TileId`]
+    pub fn get_container(&self, tile_id: TileId) -> Option<&Container> {
+        match self.tiles.get(&tile_id)? {
+            Tile::Container(container) => Some(container),
+            Tile::Pane(_) => None,
+        }
+    }
+
     pub fn get_mut(&mut self, tile_id: TileId) -> Option<&mut Tile<Pane>> {
         self.tiles.get_mut(&tile_id)
+    }
+
+    /// Get the screen-space rectangle of where a tile is shown.
+    ///
+    /// This is updated by [`crate::Tree::ui`], so you need to call that first.
+    ///
+    /// If the tile isn't visible, or is in an inactive tab, this return `None`.
+    pub fn rect(&self, tile_id: TileId) -> Option<Rect> {
+        if self.is_visible(tile_id) {
+            self.rects.get(&tile_id).copied()
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn rect_or_die(&self, tile_id: TileId) -> Rect {
+        let rect = self.rect(tile_id);
+        debug_assert!(rect.is_some(), "Failed to find rect for {tile_id:?}");
+        rect.unwrap_or(egui::Rect::from_min_max(Pos2::ZERO, Pos2::ZERO))
     }
 
     /// All tiles, in arbitrary order
@@ -139,38 +160,51 @@ impl<Pane> Tiles<Pane> {
         self.set_visible(tile_id, !self.is_visible(tile_id));
     }
 
+    /// This excludes all tiles that invisible or are inactive tabs, recursively.
+    pub(crate) fn collect_acticve_tiles(&self, tile_id: TileId, tiles: &mut Vec<TileId>) {
+        if !self.is_visible(tile_id) {
+            return;
+        }
+        tiles.push(tile_id);
+
+        if let Some(Tile::Container(container)) = self.get(tile_id) {
+            for &child_id in container.active_children() {
+                self.collect_acticve_tiles(child_id, tiles);
+            }
+        }
+    }
+
     pub fn insert(&mut self, id: TileId, tile: Tile<Pane>) {
         self.tiles.insert(id, tile);
     }
 
+    /// Remove the tile with the given id from the tiles container.
+    ///
+    /// Note that this does not actually remove the tile from the tree and may
+    /// leave dangling references. If you want to permanently remove the tile
+    /// consider calling [`crate::Tree::remove_recursively`].
     pub fn remove(&mut self, id: TileId) -> Option<Tile<Pane>> {
         self.tiles.remove(&id)
     }
 
-    /// Remove the given tile and all child tiles, recursively.
-    ///
-    /// All removed tiles are returned in unspecified order.
-    pub fn remove_recursively(&mut self, id: TileId) -> Vec<Tile<Pane>> {
-        let mut removed_tiles = vec![];
-        self.remove_recursively_impl(id, &mut removed_tiles);
-        removed_tiles
-    }
+    pub fn next_free_id(&mut self) -> TileId {
+        let mut id = TileId::from_u64(self.next_tile_id);
 
-    fn remove_recursively_impl(&mut self, id: TileId, removed_tiles: &mut Vec<Tile<Pane>>) {
-        if let Some(tile) = self.remove(id) {
-            if let Tile::Container(container) = &tile {
-                for &child_id in container.children() {
-                    self.remove_recursively_impl(child_id, removed_tiles);
-                }
-            }
-            removed_tiles.push(tile);
+        // Make sure it doesn't collide with an existing id
+        while self.tiles.get(&id).is_some() {
+            self.next_tile_id += 1;
+            id = TileId::from_u64(self.next_tile_id);
         }
+
+        // Final increment the next_id
+        self.next_tile_id += 1;
+
+        id
     }
 
     #[must_use]
     pub fn insert_new(&mut self, tile: Tile<Pane>) -> TileId {
-        let id = TileId::from_u64(self.next_tile_id);
-        self.next_tile_id += 1;
+        let id = self.next_free_id();
         self.tiles.insert(id, tile);
         id
     }
@@ -212,6 +246,7 @@ impl<Pane> Tiles<Pane> {
     }
 
     pub fn parent_of(&self, child_id: TileId) -> Option<TileId> {
+        #[allow(clippy::iter_over_hash_type)] // Each tile can only have one parent
         for (tile_id, tile) in &self.tiles {
             if let Tile::Container(container) = tile {
                 if container.has_child(child_id) {
@@ -233,7 +268,7 @@ impl<Pane> Tiles<Pane> {
         } = insertion_point;
 
         let Some(mut parent_tile) = self.tiles.remove(&parent_id) else {
-            log::warn!("Failed to insert: could not find parent {parent_id:?}");
+            log::debug!("Failed to insert: could not find parent {parent_id:?}");
             return;
         };
 
@@ -320,7 +355,7 @@ impl<Pane> Tiles<Pane> {
             // This should only happen if the user set up the tree in a bad state,
             // or if it was restored from a bad state via serde.
             // …or if there is a bug somewhere 😜
-            log::warn!(
+            log::debug!(
                 "GC collecting tiles: {:?}",
                 self.tiles
                     .keys()
@@ -371,7 +406,7 @@ impl<Pane> Tiles<Pane> {
         tile_id: TileId,
     ) {
         let Some(mut tile) = self.tiles.remove(&tile_id) else {
-            log::warn!("Failed to find tile {tile_id:?} during layout");
+            log::debug!("Failed to find tile {tile_id:?} during layout");
             return;
         };
         self.rects.insert(tile_id, rect);
@@ -387,9 +422,9 @@ impl<Pane> Tiles<Pane> {
     /// and/or merging single-child containers into their parent.
     ///
     /// Drag-dropping tiles can often leave containers empty, or with only a single child.
-    /// This is often undersired, so this function can be used to clean up the tree.
+    /// This is often undesired, so this function can be used to clean up the tree.
     ///
-    /// What simplifcations are allowed is controlled by the [`SimplificationOptions`].
+    /// What simplifications are allowed is controlled by the [`SimplificationOptions`].
     pub(super) fn simplify(
         &mut self,
         options: &SimplificationOptions,
@@ -397,7 +432,7 @@ impl<Pane> Tiles<Pane> {
         parent_kind: Option<ContainerKind>,
     ) -> SimplifyAction {
         let Some(mut tile) = self.tiles.remove(&it) else {
-            log::warn!("Failed to find tile {it:?} during simplify");
+            log::debug!("Failed to find tile {it:?} during simplify");
             return SimplifyAction::Remove;
         };
 
@@ -427,7 +462,7 @@ impl<Pane> Tiles<Pane> {
                     }
                 }
             } else {
-                if options.join_nested_linear_containerss {
+                if options.join_nested_linear_containers {
                     if let Container::Linear(parent) = container {
                         let mut new_children = Vec::with_capacity(parent.children.len());
                         for child_id in parent.children.drain(..) {
@@ -485,7 +520,7 @@ impl<Pane> Tiles<Pane> {
 
     pub(super) fn make_all_panes_children_of_tabs(&mut self, parent_is_tabs: bool, it: TileId) {
         let Some(mut tile) = self.tiles.remove(&it) else {
-            log::warn!("Failed to find tile {it:?} during make_all_panes_children_of_tabs");
+            log::debug!("Failed to find tile {it:?} during make_all_panes_children_of_tabs");
             return;
         };
 
@@ -515,14 +550,14 @@ impl<Pane> Tiles<Pane> {
     pub(super) fn make_active(
         &mut self,
         it: TileId,
-        should_activate: &mut dyn FnMut(&Tile<Pane>) -> bool,
+        should_activate: &mut dyn FnMut(TileId, &Tile<Pane>) -> bool,
     ) -> bool {
         let Some(mut tile) = self.tiles.remove(&it) else {
-            log::warn!("Failed to find tile {it:?} during make_active");
+            log::debug!("Failed to find tile {it:?} during make_active");
             return false;
         };
 
-        let mut activate = should_activate(&tile);
+        let mut activate = should_activate(it, &tile);
 
         if let Tile::Container(container) = &mut tile {
             let mut active_child = None;
