@@ -274,7 +274,8 @@ impl Tabs {
                             let sense = egui::Sense::click_and_drag();
                             if ui
                                 .interact(ui.max_rect(), ui.id().with("background"), sense)
-                                .on_hover_cursor(egui::CursorIcon::Grab)
+                                // Disabled by ingo in commit "Remove hard-coded CursorIcon::Grab for tabs"
+                                // .on_hover_cursor(egui::CursorIcon::Grab)
                                 .drag_started()
                             {
                                 behavior.on_edit(EditAction::TileDragged);
